@@ -28,14 +28,22 @@ services:
           errors: sentry-api
           logs: docker-api-1
           events: mongo-api-1   # shard 1 uses MongoDB for events
+          db: mongo-api-1       # MongoDB health (db_query verb)
           deploy: jenkins-api
+          queue: rabbitmq-api
+          cache: redis-api
+          infra: swarm-api
       - id: api-2
         shard: 2
         sources:
           errors: sentry-api    # same Sentry project (both shards report here)
           logs: docker-api-2
           events: ch-api-2      # shard 2 uses ClickHouse for events
+          metrics: ch-api-2     # ClickHouse time-series metrics (metrics_query verb)
           deploy: jenkins-api
+          queue: rabbitmq-api
+          cache: redis-api
+          infra: swarm-api
 
   - name: recorder
     instances:
@@ -136,3 +144,19 @@ sources:
   jenkins-mcp:
     type: jenkins
     job: sama-mcp
+
+  # Phase 5 sources
+  rabbitmq-api:
+    type: rabbitmq
+    mgmt: $RABBITMQ_MGMT_URL     # env var — RabbitMQ management API URL
+    user: $RABBITMQ_USER
+    pass: $RABBITMQ_PASS
+    vhost: /
+
+  redis-api:
+    type: redis
+    url: $REDIS_URL               # env var — Redis connection URL
+
+  swarm-api:
+    type: swarm
+    service: sama-api_app         # Docker Swarm service name to check replica health

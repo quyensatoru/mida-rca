@@ -12,6 +12,17 @@ import { INCIDENT_TRIAGE_SCHEMA } from '../ingest/incident.schema.js';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const FIX_PLANS_DIR = resolve(__dirname, '../../docs/fix-plans');
 
+// Cost per 1M tokens (claude-opus-4-8)
+const COST_INPUT_PER_M = 5.0;
+const COST_OUTPUT_PER_M = 25.0;
+
+let _runsCol = null;
+
+/** Called by mongo.js after the ops DB is connected */
+export function setRunsCollection(col) {
+    _runsCol = col;
+}
+
 /**
  * Run the full 4-stage RCA pipeline on an incident.
  *
@@ -25,7 +36,9 @@ const FIX_PLANS_DIR = resolve(__dirname, '../../docs/fix-plans');
  */
 export async function runPipeline(incident) {
     const caseId = `rca-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    const run = { caseId, incidentId: incident.id, startedAt: new Date().toISOString(), stages: {} };
+    const startedAt = new Date().toISOString();
+    const startMs = Date.now();
+    const run = { caseId, incidentId: incident.id, startedAt, stages: {} };
     console.log(`[pipeline] START case:${caseId} incident:"${incident.title}"`);
 
     // ── Stage 1: Triage ────────────────────────────────────────────────────────
@@ -59,7 +72,37 @@ export async function runPipeline(incident) {
         console.error('[pipeline] Failed to write fix plan:', e.message);
     }
 
-    console.log(`[pipeline] DONE case:${caseId} confidence:${confidence}`);
+    // ── Persist run metrics ─────────────────────────────────────────────────────
+    const completedAt = new Date().toISOString();
+    const durationMs = Date.now() - startMs;
+    const inputTokens = investigateUsage?.input_tokens ?? 0;
+    const outputTokens = investigateUsage?.output_tokens ?? 0;
+    const costUsd = (inputTokens * COST_INPUT_PER_M + outputTokens * COST_OUTPUT_PER_M) / 1_000_000;
+
+    // Count tool calls from conversation messages
+    const toolCallCount = messages
+        .filter((m) => m.role === 'assistant')
+        .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+        .filter((b) => b.type === 'tool_use').length;
+
+    const runDoc = {
+        caseId,
+        incidentId: incident.id,
+        startedAt,
+        completedAt,
+        durationMs,
+        stages: run.stages,
+        toolCallCount,
+        inputTokens,
+        outputTokens,
+        costUsd: Math.round(costUsd * 10000) / 10000,
+        confidence,
+    };
+    console.log(`[pipeline] DONE case:${caseId} confidence:${confidence} toolCalls:${toolCallCount} inputTok:${inputTokens} cost:$${runDoc.costUsd}`);
+    if (_runsCol) {
+        _runsCol.insertOne(runDoc).catch((e) => console.error('[pipeline] rca_runs write failed:', e.message));
+    }
+
     return { caseId, rootCause, fixPlan, usage: investigateUsage };
 }
 

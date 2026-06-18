@@ -1,0 +1,27 @@
+{
+    "incident": {
+        "id": "INC-001",
+        "source": "manual",
+        "sourceRef": "INC-001",
+        "title": "Checkout API returning 500 errors after 14:00",
+        "description": "Starting around 14:00 today, customers on shop test.myshopify.com are seeing 500 errors when submitting orders. The checkout API seems to be failing. We had a deployment of sama-api at 13:45.",
+        "symptoms": [],
+        "affectedService": "api",
+        "timeWindow": { "from": "2026-06-18T14:00:00Z", "to": null },
+        "severity": "high",
+        "domain": "test.myshopify.com",
+        "createdAt": "2026-06-18T14:30:00Z"
+    },
+    "expectedRootCauseKeywords": [
+        "deployment",
+        "regression",
+        "checkout",
+        "500",
+        "sama-api"
+    ],
+    "expectedTriageFields": {
+        "affectedService": "api",
+        "severity": "high"
+    },
+    "description": "Baseline fixture: checkout 500 after deploy. Root cause should mention the deployment at 13:45 as the likely trigger."
+}
