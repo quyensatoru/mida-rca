@@ -1,0 +1,138 @@
+# mcp-diagnostic/inventory.yaml
+# Topology of the mida deployment — DATA, not code.
+# Adding a new deployment = writing a new inventory file, not changing drivers.
+#
+# tenancy.resolver: how to map a shop domain -> shard index
+#   (reuses the ProxyModel logic already in mida: domain -> proxy number)
+#
+# services[].instances[].sources: maps capability verb -> source id
+#   Capabilities: errors | logs | events | metrics | deploy | queue | cache | infra
+#
+# Fill in actual values: Sentry project slugs, Swarm service names, nodes, URIs.
+
+tenancy:
+  # Reuse mida's ProxyModel: query MongoDB collection 'shops' to resolve domain -> proxy index (shard)
+  resolver:
+    type: mongo
+    conn: $PROXY_URI         # env var — connection to Proxy DB
+    collection: shops
+    key: domain
+    value: proxy
+
+services:
+  - name: api
+    instances:
+      - id: api-1
+        shard: 1
+        sources:
+          errors: sentry-api
+          logs: docker-api-1
+          events: mongo-api-1   # shard 1 uses MongoDB for events
+          deploy: jenkins-api
+      - id: api-2
+        shard: 2
+        sources:
+          errors: sentry-api    # same Sentry project (both shards report here)
+          logs: docker-api-2
+          events: ch-api-2      # shard 2 uses ClickHouse for events
+          deploy: jenkins-api
+
+  - name: recorder
+    instances:
+      - id: recorder-1
+        shard: 1
+        sources:
+          logs: docker-recorder-1
+          deploy: jenkins-recorder
+      - id: recorder-2
+        shard: 2
+        sources:
+          logs: docker-recorder-2
+          deploy: jenkins-recorder
+
+  - name: heatmap
+    instances:
+      - id: hm-1
+        shard: 1
+        sources:
+          logs: docker-hm-1
+          deploy: jenkins-hm
+      - id: hm-2
+        shard: 2
+        sources:
+          logs: docker-hm-2
+          deploy: jenkins-hm
+
+  - name: mcp
+    instances:
+      - id: mcp-1
+        shard: 1
+        sources:
+          logs: docker-mcp-1
+          errors: sentry-mcp
+          deploy: jenkins-mcp
+
+# Source definitions — type determines which driver handles the call
+sources:
+  sentry-api:
+    type: sentry
+    project: sama-api              # fill in actual Sentry project slug
+
+  sentry-mcp:
+    type: sentry
+    project: sama-mcp
+
+  docker-api-1:
+    type: docker-logs
+    service: sama-api_app          # fill in actual Docker Swarm service name
+    node: null                     # null = any node
+
+  docker-api-2:
+    type: docker-logs
+    service: sama-api_app          # same service name — Docker Swarm handles node routing
+
+  docker-recorder-1:
+    type: docker-logs
+    service: sama-recorder_app
+
+  docker-recorder-2:
+    type: docker-logs
+    service: sama-recorder_app
+
+  docker-hm-1:
+    type: docker-logs
+    service: sama-hm_app
+
+  docker-hm-2:
+    type: docker-logs
+    service: sama-hm_app
+
+  docker-mcp-1:
+    type: docker-logs
+    service: sama-mcp_app
+
+  mongo-api-1:
+    type: mongo
+    conn: $API_URI_1               # env var — read-only Mongo URI for shard 1
+    collection: events
+
+  ch-api-2:
+    type: clickhouse
+    conn: $CH_URI                  # env var — ClickHouse URI (read-only user)
+    table: events
+
+  jenkins-api:
+    type: jenkins
+    job: sama-api                  # fill in Jenkins job name
+
+  jenkins-recorder:
+    type: jenkins
+    job: sama-recorder
+
+  jenkins-hm:
+    type: jenkins
+    job: sama-hm
+
+  jenkins-mcp:
+    type: jenkins
+    job: sama-mcp
