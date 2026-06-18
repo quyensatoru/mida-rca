@@ -4,7 +4,11 @@ import { ENV } from './config/env.js';
 import { connectOpsDb } from './config/mongo.js';
 import { verifyWebhookSignature, parse as parseMattermost, postReply } from './ingest/mattermost.adapter.js';
 import { runPipeline } from './orchestrator/pipeline.js';
-import { detectRecurrence } from './memory/incident.memory.js';
+import { detectRecurrence, remember } from './memory/incident.memory.js';
+import { executeFixPlan } from './executor/claude-code.runner.js';
+
+// In-memory approval store (Phase 5: persist to MongoDB)
+const pendingCases = new Map(); // caseId -> { incident, fixPlan }
 
 const app = express();
 app.use(express.json());
@@ -34,6 +38,8 @@ app.post('/webhook/mattermost', async (req, res) => {
     // Full pipeline (async — don't await in request handler)
     runPipeline(incident)
         .then(async ({ caseId, fixPlan }) => {
+            // Store for approval gate
+            pendingCases.set(caseId, { incident, fixPlan });
             const msg = buildFixPlanMessage(caseId, fixPlan, incident);
             await postReply(incident.channelId, msg).catch((e) => console.error('[webhook] postReply error:', e.message));
         })
@@ -76,6 +82,44 @@ function buildRecurrenceMessage(prior, incident) {
         'If the prior fix was not effective, trigger a fresh investigation with `/rca-investigate`.',
     ].join('\n');
 }
+
+// ── APPROVAL GATE ─────────────────────────────────────────────────────────────
+// POST /rca/approve/:caseId  — human approval triggers Claude Code execution
+app.post('/rca/approve/:caseId', async (req, res) => {
+    const { caseId } = req.params;
+    const pending = pendingCases.get(caseId);
+    if (!pending) return res.status(404).json({ error: `No pending case: ${caseId}` });
+
+    res.json({ status: 'executing', caseId, message: 'Fix plan approved — Claude Code running in branch...' });
+
+    const { incident, fixPlan } = pending;
+    pendingCases.delete(caseId);
+
+    console.log(`[approval] APPROVED case:${caseId} — executing fix plan`);
+
+    executeFixPlan(caseId, fixPlan, incident)
+        .then(async (result) => {
+            if (result.success) {
+                await remember({ caseId, incidentId: incident.id, affectedService: incident.affectedService, domain: incident.domain, rootCause: {}, fix: fixPlan, prUrl: result.prUrl, outcome: 'pr_opened', resolvedAt: new Date().toISOString() }).catch(() => {});
+                const msg = `✅ Fix applied — PR: ${result.prUrl ?? 'see repo'}\nCase: \`${caseId}\``;
+                await postReply(incident.channelId, msg).catch(() => {});
+            } else {
+                const msg = `❌ Execution failed for \`${caseId}\`:\n\`\`\`\n${result.output.slice(0, 1000)}\n\`\`\``;
+                await postReply(incident.channelId, msg).catch(() => {});
+            }
+        })
+        .catch((e) => console.error('[approval] execute error:', e));
+});
+
+app.post('/rca/reject/:caseId', (req, res) => {
+    const { caseId } = req.params;
+    if (pendingCases.delete(caseId)) {
+        console.log(`[approval] REJECTED case:${caseId}`);
+        res.json({ status: 'rejected', caseId });
+    } else {
+        res.status(404).json({ error: `No pending case: ${caseId}` });
+    }
+});
 
 // Connect DB then start server
 connectOpsDb()
