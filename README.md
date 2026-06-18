@@ -1,4 +1,4 @@
-# sama-orchestration — RCA Platform
+# MIDA — RCA Platform
 
 MCP-based Root Cause Analysis platform. Biến 1 ticket sự cố (Mattermost) thành 1 **Fix Plan** có căn cứ rồi (sau khi người duyệt) giao **Claude Code** thực thi trong branch → PR.
 
@@ -44,9 +44,9 @@ sama-orchestration/          ORCHESTRATOR — brain + control plane
 mcp-diagnostic/              READ-ONLY MCP SERVER — generic source drivers
 ├── inventory.yaml           ⭐ topology mida = DATA (không phải code)
 └── src/
-    ├── registry/            inventory.js · resolver.js
-    ├── sources/             sentry · docker-logs · jenkins · git drivers
-    └── handler/verb.handler.js   4 MCP tools
+    ├── registry/            inventory.js · resolver.js · tenant.resolver.js
+    ├── sources/             sentry · docker-logs · jenkins · git · mongo · clickhouse · rabbitmq · redis · swarm drivers
+    └── handler/verb.handler.js   10 MCP tools
 ```
 
 **Hai app, hai process, hai credential:**
@@ -121,6 +121,16 @@ JENKINS_URL=https://<jenkins-host>
 JENKINS_USER=<user>
 JENKINS_TOKEN=<read-only api token>
 REPOS_ROOT=/srv/repos
+
+# Phase 5 — heterogeneous storage + tenant routing
+PROXY_URI=mongodb://readonly:<pass>@<proxy-host>/proxy
+API_URI_1=mongodb://readonly:<pass>@<shard1-host>/sama
+CH_URI=http://readonly:<pass>@<ch-host>:8123
+RABBITMQ_MGMT_URL=http://<rabbitmq-host>:15672
+RABBITMQ_USER=<mgmt-user>
+RABBITMQ_PASS=<mgmt-pass>
+REDIS_URL=redis://<redis-host>:6379
+CACHE_REDIS_URL=redis://<redis-host>:6379
 ```
 
 ### 4. Điền inventory.yaml
@@ -134,9 +144,14 @@ services:
       - id: api-1
         shard: 1
         sources:
-          errors: sentry-api   # điền Sentry project slug thật
-          logs: docker-api-1   # điền Docker Swarm service name thật
-          deploy: jenkins-api  # điền Jenkins job name thật
+          errors: sentry-api    # Sentry project slug
+          logs: docker-api-1    # Docker Swarm service name
+          events: mongo-api-1   # MongoDB driver (shard-1)
+          db: mongo-api-1       # MongoDB health check
+          deploy: jenkins-api   # Jenkins job name
+          queue: rabbitmq-api   # shared RabbitMQ
+          cache: redis-api      # shared Redis
+          infra: swarm-api      # Docker Swarm replica health
 ```
 
 Thêm service mới = thêm entry vào yaml, **không sửa code driver**.
@@ -209,7 +224,7 @@ Trỏ Mattermost outgoing webhook về `POST http://<host>:7400/webhook/mattermo
 
 ---
 
-## MCP Tools (Phase 1)
+## MCP Tools (10 tools)
 
 | Tool | Mô tả | Dùng khi nào |
 |---|---|---|
@@ -217,8 +232,12 @@ Trỏ Mattermost outgoing webhook về `POST http://<host>:7400/webhook/mattermo
 | `sentry_issue_detail` | Stacktrace + breadcrumbs + tags của 1 issue | Drill into issue tìm thấy ở trên |
 | `logs_search` | Tìm structured logs Docker Swarm, lọc level/domain/grep | Confirm hypothesis từ Sentry, tìm lỗi không có exception |
 | `deploy_recent` | Jenkins builds + git commits gần đây | Luôn gọi sớm — "cái gì vừa đổi?" |
-
-Tools sau thêm ở **Phase 5**: `events_query`, `db_query`, `metrics_query`, `queue_status`, `cache_status`, `infra_health`.
+| `events_query` | Query session/user events — tự route đến Mongo (shard-1) hoặc ClickHouse (shard-2); hỗ trợ `traceId` correlation | Trace luồng request qua nhiều service |
+| `db_query` | MongoDB server status, connection counts, slow ops | Suspect DB connection exhaustion |
+| `metrics_query` | ClickHouse time-series: event rate, error rate per minute | Xác định spike/drop tại thời điểm nào |
+| `queue_status` | RabbitMQ queue depths, DLQs, consumer counts | Queue stall là pattern cực phổ biến của mida |
+| `cache_status` | Redis memory, hit/miss ratio, evictions, slow commands | Suspect cache pressure |
+| `infra_health` | Docker Swarm replica counts, failing tasks, restart loops | Tổng quan infra; dùng `"service":"all"` để scan toàn bộ |
 
 ---
 
@@ -232,10 +251,11 @@ Mỗi driver implement interface `{ type, capabilities[], query(verb, params, so
 | `docker-logs.source.js` | `docker-logs` | `logs` |
 | `jenkins.source.js` | `jenkins` | `deploy` |
 | `git.source.js` | `git` | `deploy` |
-| *(Phase 5)* `mongo.source.js` | `mongo` | `events`, `db` |
-| *(Phase 5)* `clickhouse.source.js` | `clickhouse` | `events`, `metrics` |
-| *(Phase 5)* `rabbitmq.source.js` | `rabbitmq` | `queue` |
-| *(Phase 5)* `redis.source.js` | `redis` | `cache` |
+| `mongo.source.js` | `mongo` | `events`, `db` |
+| `clickhouse.source.js` | `clickhouse` | `events`, `metrics` |
+| `rabbitmq.source.js` | `rabbitmq` | `queue` |
+| `redis.source.js` | `redis` | `cache` |
+| `swarm.source.js` | `swarm` | `infra` |
 
 ---
 
@@ -274,6 +294,6 @@ Estimate **$0.5–$2 / incident** với prompt caching bật (cache system promp
 | 2 — Brain | ✅ | Agentic loop + root cause + adversarial verify + fix plan |
 | 3 — Mattermost | ✅ | Ticket → Fix Plan → reply channel + recurrence detection |
 | 4 — WRITE plane | ✅ | Approval gate → Claude Code → branch → PR |
-| 5 — Hardening | ⬜ | Mongo/ClickHouse/RabbitMQ/Redis drivers, `events_query` heterogeneous (Mongo shard-1 vs ClickHouse shard-2), tenant→shard routing, traceId correlation, eval suite |
+| 5 — Hardening | ✅ | Mongo/ClickHouse/RabbitMQ/Redis drivers, `events_query` heterogeneous (Mongo shard-1 vs ClickHouse shard-2), tenant→shard routing, traceId correlation, eval suite |
 
 Chi tiết từng phase: [plan.md](plan.md).
