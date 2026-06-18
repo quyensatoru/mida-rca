@@ -1,0 +1,13 @@
+{
+    "id": "INC-001",
+    "source": "manual",
+    "sourceRef": "INC-001",
+    "title": "Checkout API returning 500 errors after 14:00",
+    "description": "Starting around 14:00 today, customers on shop test.myshopify.com are seeing 500 errors when submitting orders. The checkout API seems to be failing. We had a deployment of sama-api at 13:45.",
+    "symptoms": [],
+    "affectedService": "sama-api",
+    "timeWindow": { "from": "2026-06-18T14:00:00Z", "to": null },
+    "severity": "high",
+    "domain": "test.myshopify.com",
+    "createdAt": "2026-06-18T14:30:00Z"
+}
